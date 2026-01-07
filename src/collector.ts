@@ -10,6 +10,16 @@ const CODEX_DATA_PATH = join(os.homedir(), ".codex");
 const CODEX_HISTORY_PATH = join(CODEX_DATA_PATH, "history.jsonl");
 const CODEX_SESSIONS_PATH = join(CODEX_DATA_PATH, "sessions");
 
+export interface CodexUsageEvent {
+  timestamp: string;
+  model: string;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
+}
+
 export type ModelUsageTotals = {
   inputTokens: number;
   cachedInputTokens: number;
@@ -19,6 +29,8 @@ export type ModelUsageTotals = {
 };
 
 export interface CodexUsageData {
+  // Kept for backward compatibility; large histories can make this expensive to build.
+  events: CodexUsageEvent[];
   dailyActivity: Map<string, number>;
   totalMessages: number;
   totalSessions: number;
@@ -111,8 +123,13 @@ export async function getCodexFirstPromptTimestamp(): Promise<number | null> {
   }
 }
 
-export async function collectCodexUsageData(year: number): Promise<CodexUsageData> {
+export async function collectCodexUsageData(
+  year: number,
+  options: { includeEvents?: boolean } = {}
+): Promise<CodexUsageData> {
+  const includeEvents = options.includeEvents !== false;
   const files = await listCodexSessionFiles(year);
+  const events: CodexUsageEvent[] = [];
   const dailyActivity = new Map<string, number>();
   const projects = new Set<string>();
   let totalMessages = 0;
@@ -126,7 +143,7 @@ export async function collectCodexUsageData(year: number): Promise<CodexUsageDat
   let totalTokens = 0;
 
   const concurrency = Math.max(1, Math.min(os.cpus()?.length ?? 4, 8));
-  const results = await asyncPool(concurrency, files, (filePath) => processSessionFile(filePath));
+  const results = await asyncPool(concurrency, files, (filePath) => processSessionFile(filePath, includeEvents));
 
   for (const res of results) {
     totalMessages += res.totalMessages;
@@ -135,6 +152,9 @@ export async function collectCodexUsageData(year: number): Promise<CodexUsageDat
     }
     for (const project of res.projects) projects.add(project);
     mergeCountMap(dailyActivity, res.dailyActivity);
+    if (includeEvents && res.events.length > 0) {
+      events.push(...res.events);
+    }
 
     totalInputTokens += res.totalInputTokens;
     totalCachedInputTokens += res.totalCachedInputTokens;
@@ -152,7 +172,12 @@ export async function collectCodexUsageData(year: number): Promise<CodexUsageDat
     }
   }
 
+  if (includeEvents) {
+    events.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  }
+
   return {
+    events,
     dailyActivity,
     totalMessages,
     totalSessions: files.length,
@@ -213,6 +238,8 @@ function convertToDelta(raw: RawUsage): CodexUsageEvent {
   const total = raw.total_tokens > 0 ? raw.total_tokens : raw.input_tokens + raw.output_tokens;
   const cached = Math.min(raw.cached_input_tokens, raw.input_tokens);
   return {
+    timestamp: "",
+    model: "",
     inputTokens: raw.input_tokens,
     cachedInputTokens: cached,
     outputTokens: raw.output_tokens,
@@ -220,14 +247,6 @@ function convertToDelta(raw: RawUsage): CodexUsageEvent {
     totalTokens: total,
   };
 }
-
-type CodexUsageEvent = {
-  inputTokens: number;
-  cachedInputTokens: number;
-  outputTokens: number;
-  reasoningOutputTokens: number;
-  totalTokens: number;
-};
 
 function getOrCreateModelUsage(map: Map<string, ModelUsageTotals>, modelId: string): ModelUsageTotals {
   const existing = map.get(modelId);
@@ -286,6 +305,7 @@ function formatDateKey(date: Date): string {
 }
 
 type FileUsageResult = {
+  events: CodexUsageEvent[];
   dailyActivity: Map<string, number>;
   totalMessages: number;
   projects: Set<string>;
@@ -298,7 +318,8 @@ type FileUsageResult = {
   totalTokens: number;
 };
 
-async function processSessionFile(filePath: string): Promise<FileUsageResult> {
+async function processSessionFile(filePath: string, includeEvents: boolean): Promise<FileUsageResult> {
+  const events: CodexUsageEvent[] = [];
   const dailyActivity = new Map<string, number>();
   const projects = new Set<string>();
   let totalMessages = 0;
@@ -434,6 +455,18 @@ async function processSessionFile(filePath: string): Promise<FileUsageResult> {
     totalReasoningTokens += delta.reasoningOutputTokens;
     totalTokens += eventTotal;
 
+    if (includeEvents) {
+      events.push({
+        timestamp,
+        model,
+        inputTokens: delta.inputTokens,
+        cachedInputTokens: delta.cachedInputTokens,
+        outputTokens: delta.outputTokens,
+        reasoningOutputTokens: delta.reasoningOutputTokens,
+        totalTokens: delta.totalTokens,
+      });
+    }
+
     const usage = getOrCreateModelUsage(modelUsageTotals, model);
     usage.inputTokens += delta.inputTokens;
     usage.cachedInputTokens += delta.cachedInputTokens;
@@ -447,6 +480,7 @@ async function processSessionFile(filePath: string): Promise<FileUsageResult> {
   }
 
   return {
+    events,
     dailyActivity,
     totalMessages,
     projects,
@@ -469,6 +503,9 @@ function mergeCountMap(into: Map<string, number>, from: Map<string, number>) {
 function getTopLevelType(line: string): string | null {
   const keyIdx = line.indexOf("\"type\"");
   if (keyIdx === -1) return null;
+  // Avoid mistakenly matching nested `"type"` fields inside payload objects.
+  const payloadIdx = line.indexOf("\"payload\"");
+  if (payloadIdx !== -1 && keyIdx > payloadIdx) return null;
   const colonIdx = line.indexOf(":", keyIdx + 6);
   if (colonIdx === -1) return null;
   let i = colonIdx + 1;

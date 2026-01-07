@@ -6,7 +6,7 @@ import { calculateCostUSD, getModelPricing } from "./pricing";
 export async function calculateStats(year: number): Promise<CodexStats> {
   await fetchModelsData();
 
-  const usageData = await collectCodexUsageData(year);
+  const usageData = await collectCodexUsageData(year, { includeEvents: false });
   const dailyActivity = usageData.dailyActivity;
   const weekdayCounts: [number, number, number, number, number, number, number] = [0, 0, 0, 0, 0, 0, 0];
 
