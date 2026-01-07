@@ -1,15 +1,7 @@
 import type { CodexStats, ModelStats, ProviderStats, WeekdayActivity } from "./types";
-import { collectCodexUsageData, getCodexFirstPromptTimestamp, type CodexUsageEvent } from "./collector";
+import { collectCodexUsageData, getCodexFirstPromptTimestamp } from "./collector";
 import { fetchModelsData, getModelDisplayName, getModelProvider, getProviderDisplayName } from "./models";
 import { calculateCostUSD, getModelPricing } from "./pricing";
-
-type ModelUsageTotals = {
-  inputTokens: number;
-  cachedInputTokens: number;
-  outputTokens: number;
-  reasoningTokens: number;
-  totalTokens: number;
-};
 
 export async function calculateStats(year: number): Promise<CodexStats> {
   await fetchModelsData();
@@ -23,30 +15,13 @@ export async function calculateStats(year: number): Promise<CodexStats> {
     weekdayCounts[weekday] += count;
   }
 
-  const modelUsageTotals = new Map<string, ModelUsageTotals>();
+  const modelUsageTotals = usageData.modelUsageTotals;
 
-  let totalInputTokens = 0;
-  let totalCachedInputTokens = 0;
-  let totalOutputTokens = 0;
-  let totalReasoningTokens = 0;
-  let totalTokens = 0;
-
-  for (const event of usageData.events) {
-    const eventTotal = getEventTotal(event);
-
-    totalInputTokens += event.inputTokens;
-    totalCachedInputTokens += event.cachedInputTokens;
-    totalOutputTokens += event.outputTokens;
-    totalReasoningTokens += event.reasoningOutputTokens;
-    totalTokens += eventTotal;
-
-    const usage = getOrCreateModelUsage(modelUsageTotals, event.model);
-    usage.inputTokens += event.inputTokens;
-    usage.cachedInputTokens += event.cachedInputTokens;
-    usage.outputTokens += event.outputTokens;
-    usage.reasoningTokens += event.reasoningOutputTokens;
-    usage.totalTokens += eventTotal;
-  }
+  const totalInputTokens = usageData.totalInputTokens;
+  const totalCachedInputTokens = usageData.totalCachedInputTokens;
+  const totalOutputTokens = usageData.totalOutputTokens;
+  const totalReasoningTokens = usageData.totalReasoningTokens;
+  const totalTokens = usageData.totalTokens;
 
   const providerCounts = new Map<string, number>();
   const modelStats: ModelStats[] = [];
@@ -144,26 +119,9 @@ function formatDateKey(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-function getEventTotal(event: CodexUsageEvent): number {
-  const computed = event.inputTokens + event.outputTokens;
-  return Math.max(event.totalTokens, computed);
-}
-
-function getOrCreateModelUsage(map: Map<string, ModelUsageTotals>, modelId: string): ModelUsageTotals {
-  const existing = map.get(modelId);
-  if (existing) return existing;
-  const fresh = {
-    inputTokens: 0,
-    cachedInputTokens: 0,
-    outputTokens: 0,
-    reasoningTokens: 0,
-    totalTokens: 0,
-  };
-  map.set(modelId, fresh);
-  return fresh;
-}
-
-async function calculateUsageCost(modelUsageTotals: Map<string, ModelUsageTotals>): Promise<number> {
+async function calculateUsageCost(
+  modelUsageTotals: Awaited<ReturnType<typeof collectCodexUsageData>>["modelUsageTotals"]
+): Promise<number> {
   let totalCost = 0;
 
   for (const [modelId, usage] of modelUsageTotals.entries()) {
