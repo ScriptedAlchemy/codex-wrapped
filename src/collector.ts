@@ -325,6 +325,7 @@ async function processSessionFile(filePath: string): Promise<FileUsageResult> {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
+    // Fast path: avoid `JSON.parse` for the vast majority of session lines (e.g. response items).
     const topType = getTopLevelType(trimmed);
     if (topType !== "session_meta" && topType !== "turn_context" && topType !== "event_msg") {
       continue;
